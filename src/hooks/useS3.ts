@@ -21,4 +21,28 @@ export const s3 = {
 
   downloadFile: (bucket: string, key: string, savePath: string) =>
     invoke<void>("download_file", { bucket, key, savePath }),
+
+  uploadFile: (bucket: string, key: string, localPath: string) =>
+    invoke<void>("upload_file", { bucket, key, localPath }),
+
+  uploadFolder: (bucket: string, prefix: string, localDir: string) =>
+    invoke<number>("upload_folder", { bucket, prefix, localDir }),
+
+  isDirectory: (path: string) =>
+    invoke<boolean>("is_directory", { path }),
+
+  objectExists: (bucket: string, key: string) =>
+    invoke<boolean>("object_exists", { bucket, key }),
+
+  deleteObject: (bucket: string, key: string) =>
+    invoke<void>("delete_object", { bucket, key }),
+
+  deleteFolder: (bucket: string, prefix: string) =>
+    invoke<void>("delete_folder", { bucket, prefix }),
+
+  renameObject: (bucket: string, oldKey: string, newKey: string) =>
+    invoke<void>("rename_object", { bucket, oldKey, newKey }),
+
+  renameFolder: (bucket: string, oldPrefix: string, newPrefix: string) =>
+    invoke<void>("rename_folder", { bucket, oldPrefix, newPrefix }),
 };

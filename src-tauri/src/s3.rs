@@ -1,9 +1,12 @@
 use aws_config::BehaviorVersion;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::config::Region;
+use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredCredentials {
@@ -183,5 +186,230 @@ pub async fn download_file(
 
     let data = resp.body.collect().await.map_err(|e| e.to_string())?.into_bytes();
     tokio::fs::write(&save_path, &data).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn upload_file(
+    state: State<'_, AppState>,
+    bucket: String,
+    key: String,
+    local_path: String,
+) -> Result<(), String> {
+    let client = state.client.lock().unwrap().clone().ok_or("Not configured")?;
+    let bytes = tokio::fs::read(&local_path).await.map_err(|e| e.to_string())?;
+    client
+        .put_object()
+        .bucket(&bucket)
+        .key(&key)
+        .body(ByteStream::from(bytes))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn upload_folder(
+    state: State<'_, AppState>,
+    bucket: String,
+    prefix: String,
+    local_dir: String,
+) -> Result<u32, String> {
+    let client = state.client.lock().unwrap().clone().ok_or("Not configured")?;
+    let base = std::path::Path::new(&local_dir);
+    let mut count = 0u32;
+    for entry in WalkDir::new(base).follow_links(false) {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let rel = entry.path().strip_prefix(base).map_err(|e| e.to_string())?;
+        let rel_str = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        let key = format!("{}{}", prefix, rel_str);
+        let bytes = tokio::fs::read(entry.path()).await.map_err(|e| e.to_string())?;
+        client
+            .put_object()
+            .bucket(&bucket)
+            .key(&key)
+            .body(ByteStream::from(bytes))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+#[tauri::command]
+pub fn is_directory(path: String) -> Result<bool, String> {
+    Ok(std::path::Path::new(&path).is_dir())
+}
+
+#[tauri::command]
+pub async fn object_exists(
+    state: State<'_, AppState>,
+    bucket: String,
+    key: String,
+) -> Result<bool, String> {
+    let client = state.client.lock().unwrap().clone().ok_or("Not configured")?;
+    match client.head_object().bucket(&bucket).key(&key).send().await {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            let service_error = e.into_service_error();
+            if service_error.is_not_found() {
+                Ok(false)
+            } else {
+                Err(service_error.to_string())
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn delete_object(
+    state: State<'_, AppState>,
+    bucket: String,
+    key: String,
+) -> Result<(), String> {
+    let client = state.client.lock().unwrap().clone().ok_or("Not configured")?;
+    client
+        .delete_object()
+        .bucket(&bucket)
+        .key(&key)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_folder(
+    state: State<'_, AppState>,
+    bucket: String,
+    prefix: String,
+) -> Result<(), String> {
+    let client = state.client.lock().unwrap().clone().ok_or("Not configured")?;
+    let mut continuation_token: Option<String> = None;
+    loop {
+        let mut req = client.list_objects_v2().bucket(&bucket).prefix(&prefix);
+        if let Some(ref token) = continuation_token {
+            req = req.continuation_token(token);
+        }
+        let resp = req.send().await.map_err(|e| e.to_string())?;
+        let identifiers: Vec<ObjectIdentifier> = resp
+            .contents()
+            .iter()
+            .filter_map(|obj| obj.key())
+            .filter_map(|k| ObjectIdentifier::builder().key(k).build().ok())
+            .collect();
+        if !identifiers.is_empty() {
+            let delete = Delete::builder()
+                .set_objects(Some(identifiers))
+                .build()
+                .map_err(|e| e.to_string())?;
+            client
+                .delete_objects()
+                .bucket(&bucket)
+                .delete(delete)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        if resp.is_truncated().unwrap_or(false) {
+            continuation_token = resp.next_continuation_token().map(String::from);
+        } else {
+            break;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_object(
+    state: State<'_, AppState>,
+    bucket: String,
+    old_key: String,
+    new_key: String,
+) -> Result<(), String> {
+    let client = state.client.lock().unwrap().clone().ok_or("Not configured")?;
+    let copy_source = format!("{}/{}", bucket, old_key);
+    client
+        .copy_object()
+        .bucket(&bucket)
+        .copy_source(&copy_source)
+        .key(&new_key)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    client
+        .delete_object()
+        .bucket(&bucket)
+        .key(&old_key)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_folder(
+    state: State<'_, AppState>,
+    bucket: String,
+    old_prefix: String,
+    new_prefix: String,
+) -> Result<(), String> {
+    let client = state.client.lock().unwrap().clone().ok_or("Not configured")?;
+    let mut continuation_token: Option<String> = None;
+    let mut all_old_keys: Vec<String> = Vec::new();
+    loop {
+        let mut req = client.list_objects_v2().bucket(&bucket).prefix(&old_prefix);
+        if let Some(ref token) = continuation_token {
+            req = req.continuation_token(token);
+        }
+        let resp = req.send().await.map_err(|e| e.to_string())?;
+        for obj in resp.contents() {
+            if let Some(key) = obj.key() {
+                let suffix = &key[old_prefix.len()..];
+                let new_key = format!("{}{}", new_prefix, suffix);
+                let copy_source = format!("{}/{}", bucket, key);
+                client
+                    .copy_object()
+                    .bucket(&bucket)
+                    .copy_source(&copy_source)
+                    .key(&new_key)
+                    .send()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                all_old_keys.push(key.to_string());
+            }
+        }
+        if resp.is_truncated().unwrap_or(false) {
+            continuation_token = resp.next_continuation_token().map(String::from);
+        } else {
+            break;
+        }
+    }
+    for chunk in all_old_keys.chunks(1000) {
+        let identifiers: Vec<ObjectIdentifier> = chunk
+            .iter()
+            .filter_map(|k| ObjectIdentifier::builder().key(k).build().ok())
+            .collect();
+        let delete = Delete::builder()
+            .set_objects(Some(identifiers))
+            .build()
+            .map_err(|e| e.to_string())?;
+        client
+            .delete_objects()
+            .bucket(&bucket)
+            .delete(delete)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }

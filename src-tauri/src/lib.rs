@@ -16,6 +16,14 @@ pub fn run() {
             s3::list_buckets,
             s3::list_objects,
             s3::download_file,
+            s3::upload_file,
+            s3::upload_folder,
+            s3::is_directory,
+            s3::object_exists,
+            s3::delete_object,
+            s3::delete_folder,
+            s3::rename_object,
+            s3::rename_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
