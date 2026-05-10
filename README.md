@@ -6,6 +6,10 @@ A lightweight desktop app for browsing and downloading files from AWS S3-compati
 
 - Browse buckets and navigate folders with breadcrumb navigation
 - Download files to your local machine
+- Upload files or entire folders (via toolbar buttons or drag-and-drop)
+- Rename files and folders inline
+- Delete files and folders with confirmation
+- Conflict detection on upload — overwrite or skip existing files
 - Save credentials locally between sessions
 - Compatible with custom endpoints (MinIO, LocalStack, etc.)
 
